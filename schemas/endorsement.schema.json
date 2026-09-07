@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Endorsement Record",
+  "description": "Project Rune endorsement record — independently issued attestation that a specific action, coordination event, or identity claim has been verified. MVP signature schemes: HMAC-SHA256 (hmac:<hex>) or Ed25519 (ed25519:<hex>) over canonical JSON excluding the signature field.",
+  "type": "object",
+  "required": [
+    "endorsement_id",
+    "subject",
+    "verifier",
+    "method",
+    "issued_at",
+    "status",
+    "signature"
+  ],
+  "properties": {
+    "endorsement_id": {
+      "type": "string",
+      "description": "Unique identifier for this endorsement record."
+    },
+    "subject": {
+      "type": "object",
+      "description": "What is being endorsed.",
+      "required": ["type", "reference"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "agent_coordination_event",
+            "identity_file_change",
+            "completion_claim",
+            "other"
+          ]
+        },
+        "reference": {
+          "type": "string",
+          "description": "Pointer to the specific event, file, or claim being endorsed (e.g. a commit hash, file path, or event ID)."
+        }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "required": ["verifier_id", "verifier_type", "independent_of_subject"],
+      "properties": {
+        "verifier_id": {
+          "type": "string"
+        },
+        "verifier_type": {
+          "type": "string",
+          "enum": ["human", "independent_system", "unknown"],
+          "description": "'independent_system' requires a genuinely different architecture/training lineage than the subject being checked, not merely a separate instance of the same model. MVP bootstrap uses human (SSE/Robyn)."
+        },
+        "independent_of_subject": {
+          "type": "boolean",
+          "description": "Whether the verifier's failure modes are believed independent of the subject's."
+        }
+      }
+    },
+    "method": {
+      "type": "string",
+      "description": "How the check was performed."
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional pointers to supporting evidence (logs, screenshots, test output, owner confirmation)."
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Optional. If absent, endorsement does not expire."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PENDING", "ENDORSED", "REJECTED", "REVOKED"]
+    },
+    "signature": {
+      "type": "string",
+      "description": "Cryptographic signature binding this record to the verifier. MVP: 'hmac:<hex>' (HMAC-SHA256) or 'ed25519:<hex>'."
+    },
+    "jethro_color": {
+      "type": "string",
+      "enum": ["green", "yellow", "red"],
+      "description": "Optional Jethro triage color at issuance."
+    }
+  }
+}
