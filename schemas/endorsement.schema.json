@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Endorsement Record",
-  "description": "Project Rune endorsement record — independently issued attestation that a specific action, coordination event, or identity claim has been verified. MVP signature schemes: HMAC-SHA256 (hmac:<hex>) or Ed25519 (ed25519:<hex>) over canonical JSON excluding the signature field.",
+  "description": "Project Rune endorsement record. Signature is Ed25519 only (structured object). independence_claimed is a claim, not proof. See decisions/PENDING-001 and PENDING-002.",
   "type": "object",
   "required": [
     "endorsement_id",
@@ -33,13 +33,13 @@
         },
         "reference": {
           "type": "string",
-          "description": "Pointer to the specific event, file, or claim being endorsed (e.g. a commit hash, file path, or event ID)."
+          "description": "Pointer to the specific event, file, or claim being endorsed."
         }
       }
     },
     "verifier": {
       "type": "object",
-      "required": ["verifier_id", "verifier_type", "independent_of_subject"],
+      "required": ["verifier_id", "verifier_type", "independence_claimed"],
       "properties": {
         "verifier_id": {
           "type": "string"
@@ -47,11 +47,19 @@
         "verifier_type": {
           "type": "string",
           "enum": ["human", "independent_system", "unknown"],
-          "description": "'independent_system' requires a genuinely different architecture/training lineage than the subject being checked, not merely a separate instance of the same model. MVP bootstrap uses human (SSE/Robyn)."
+          "description": "independent_system is schema-compatible only. The enum value alone is NOT proof of architectural independence (PENDING-002)."
+        },
+        "independence_claimed": {
+          "type": "boolean",
+          "description": "Epistemic claim only — issuer asserts independence. Not enforced as proof. Replaces misleading independent_of_subject."
+        },
+        "independence_basis": {
+          "type": "string",
+          "description": "Optional non-authoritative evidence/claim text. Not automatic proof."
         },
         "independent_of_subject": {
           "type": "boolean",
-          "description": "Whether the verifier's failure modes are believed independent of the subject's."
+          "description": "DEPRECATED alias. Readers may map to independence_claimed; writers should use independence_claimed."
         }
       }
     },
@@ -62,7 +70,7 @@
     "evidence_refs": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Optional pointers to supporting evidence (logs, screenshots, test output, owner confirmation)."
+      "description": "Optional pointers to supporting evidence."
     },
     "issued_at": {
       "type": "string",
@@ -78,8 +86,24 @@
       "enum": ["PENDING", "ENDORSED", "REJECTED", "REVOKED"]
     },
     "signature": {
-      "type": "string",
-      "description": "Cryptographic signature binding this record to the verifier. MVP: 'hmac:<hex>' (HMAC-SHA256) or 'ed25519:<hex>'."
+      "type": "object",
+      "required": ["algorithm", "key_id", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "const": "Ed25519",
+          "description": "RFC 8032 Ed25519. HMAC is not a Rune endorsement identity mechanism."
+        },
+        "key_id": {
+          "type": "string",
+          "description": "Stable public-key identifier (ed25519:<sha256-prefix>)."
+        },
+        "value": {
+          "type": "string",
+          "description": "Base64-encoded Ed25519 signature over UTF-8(JCS(payload excluding signature))."
+        }
+      }
     },
     "jethro_color": {
       "type": "string",

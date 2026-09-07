@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -16,8 +17,10 @@ from rune import (
 )
 from rune.jethro import TriageColor, classify_triage
 from rune.ledger import (
+    FAIL_OPEN_ACTIVE_EVENT,
     GATE_ALLOW_EVENT,
     GATE_BLOCK_EVENT,
+    GATE_BYPASS_EVENT,
     REVOKE_EVENT,
     EndorsementLedger,
 )
@@ -25,9 +28,40 @@ from rune.models import EndorsementRecord, LedgerEvent, Subject, Verifier
 from rune.signatures import sign_record, verify_signature
 
 
+def fail_mode() -> str:
+    """Normalize RUNE_FAIL_MODE. Unknown/empty -> closed. Only 'open' is open."""
+    raw = os.environ.get("RUNE_FAIL_MODE")
+    if raw is None:
+        return "closed"
+    mode = raw.strip().lower()
+    if mode == "open":
+        return "open"
+    return "closed"
+
+
 def fail_closed() -> bool:
-    mode = (os.environ.get("RUNE_FAIL_MODE") or "closed").strip().lower()
-    return mode != "open"
+    return not fail_open_active()
+
+
+def fail_open_active() -> bool:
+    """Low-risk escape hatch only when explicitly enabled for non-production.
+
+    Requires:
+    - RUNE_FAIL_MODE=open (after strip/lower)
+    - RUNE_DEV_ESCAPE=1
+    - RUNE_ENV is not 'production'
+
+    High-risk subjects never use this path (enforced in Gate.check).
+    """
+    if fail_mode() != "open":
+        return False
+    if os.environ.get("RUNE_ENV", "").strip().lower() == "production":
+        return False
+    return os.environ.get("RUNE_DEV_ESCAPE", "").strip() == "1"
+
+
+def run_session_id() -> str:
+    return os.environ.get("RUNE_SESSION_ID") or os.environ.get("RUNE_RUN_ID") or ""
 
 
 def _parse_iso(ts: str | None) -> datetime | None:
@@ -72,6 +106,25 @@ class GateDecision:
 class Gate:
     def __init__(self, ledger: EndorsementLedger | None = None) -> None:
         self.ledger = ledger or EndorsementLedger()
+        self._fail_open_announced = False
+
+    def _announce_fail_open_if_needed(self, *, actor: str) -> None:
+        if not fail_open_active() or self._fail_open_announced:
+            return
+        self._fail_open_announced = True
+        self.ledger.append_event(
+            LedgerEvent.create(
+                event_type=FAIL_OPEN_ACTIVE_EVENT,
+                actor=actor,
+                detail="fail_open_active",
+                payload={
+                    "fail_mode": "open",
+                    "rune_env": os.environ.get("RUNE_ENV", ""),
+                    "dev_escape": os.environ.get("RUNE_DEV_ESCAPE", ""),
+                    "session_id": run_session_id(),
+                },
+            )
+        )
 
     def check(
         self,
@@ -111,10 +164,36 @@ class Gate:
 
         record = self.ledger.latest_endorsement_for(subject_type, reference)
         if record is None:
-            if subject_type not in HIGH_RISK_SUBJECT_TYPES and not fail_closed():
+            # High-risk subjects MUST NEVER use fail-open.
+            if (
+                subject_type not in HIGH_RISK_SUBJECT_TYPES
+                and fail_open_active()
+            ):
+                if record_ledger:
+                    self._announce_fail_open_if_needed(actor=actor)
+                    bypass = self.ledger.append_event(
+                        LedgerEvent.create(
+                            event_type=GATE_BYPASS_EVENT,
+                            actor=actor,
+                            subject_type=subject_type,
+                            subject_reference=reference,
+                            detail="low-risk fail-open bypass",
+                            payload={
+                                "fail_mode": "open",
+                                "reason": "no endorsement; low-risk subject; fail_open_active",
+                                "session_id": run_session_id() or str(uuid.uuid4()),
+                            },
+                        )
+                    )
+                    return GateDecision(
+                        allowed=True,
+                        reason="non-high-risk fail-open bypass (dev escape)",
+                        jethro_color="green",
+                        ledger_event_id=bypass["event_id"],
+                    )
                 return GateDecision(
                     allowed=True,
-                    reason="non-high-risk and fail-open",
+                    reason="non-high-risk fail-open bypass (dev escape)",
                     jethro_color="green",
                 )
             decision = GateDecision(
@@ -135,6 +214,10 @@ class Gate:
                 )
                 decision.ledger_event_id = ev["event_id"]
             return decision
+
+        # independence_claimed / independent_system enum are NOT proof of independence.
+        _ = record.verifier.independence_claimed
+        _ = record.verifier.verifier_type
 
         if record.status == STATUS_REVOKED:
             decision = GateDecision(
@@ -171,7 +254,9 @@ class Gate:
                 endorsement=record,
                 jethro_color="yellow",
             )
-        elif not verify_signature(record.to_dict()):
+        elif not verify_signature(
+            record.to_dict(), verifier_id=record.verifier.verifier_id
+        ):
             decision = GateDecision(
                 allowed=False,
                 reason="signature verification failed",
@@ -212,14 +297,35 @@ class Gate:
         verifier_id: str | None = None,
         reject: bool = False,
         expires_at: str | None = None,
+        verifier_type: str = "human",
+        independence_claimed: bool = False,
+        independence_basis: str | None = None,
     ) -> EndorsementRecord:
         """Create PENDING, ENDORSED (human confirm), or REJECTED record."""
         bootstrap_id = self.ledger.bootstrap_verifier_id()
         vid = verifier_id or bootstrap_id or "sse-robyn"
+
+        # Where identity is determinable: verifier cannot endorse itself as the subject.
+        if confirm and vid == reference:
+            raise ValueError(
+                "self-endorsement refused: verifier_id must not equal subject.reference"
+            )
+        if confirm and actor == reference and subject_type in HIGH_RISK_SUBJECT_TYPES:
+            raise ValueError(
+                "self-endorsement refused: actor must not equal high-risk subject.reference"
+            )
+
+        # independent_system remains schema-compatible but is not proven independence.
+        if verifier_type == "independent_system":
+            independence_basis = independence_basis or (
+                "claim_only: independent_system enum is not enforceable proof"
+            )
+
         verifier = Verifier(
             verifier_id=vid,
-            verifier_type="human",
-            independent_of_subject=True,
+            verifier_type=verifier_type,
+            independence_claimed=independence_claimed,
+            independence_basis=independence_basis,
         )
         if reject:
             status = STATUS_REJECTED
@@ -256,7 +362,6 @@ class Gate:
         if existing is None:
             raise KeyError(f"endorsement not found: {endorsement_id}")
         existing.status = STATUS_REVOKED
-        # Re-sign revoked snapshot and append revoke event + endorsement snapshot.
         existing.signature = sign_record(existing.to_dict())
         self.ledger.append_event(
             LedgerEvent.create(
@@ -272,22 +377,23 @@ class Gate:
         self.ledger.append_endorsement(existing, actor=actor)
         return existing
 
-    def bootstrap_human_verifier(self, verifier_id: str = "sse-robyn", *, actor: str = "owner") -> dict:
+    def bootstrap_human_verifier(
+        self, verifier_id: str = "sse-robyn", *, actor: str = "owner"
+    ) -> dict:
         if self.ledger.bootstrap_verifier_id():
             return {
                 "ok": True,
                 "already": True,
                 "verifier_id": self.ledger.bootstrap_verifier_id(),
             }
-        # Bootstrap receipt is itself a signed ledger event (not a subject endorsement).
         payload = {
             "verifier_id": verifier_id,
             "verifier_type": "human",
-            "independent_of_subject": True,
+            "independence_claimed": False,
+            "independence_basis": "human bootstrap label only; not architectural proof",
             "method": "human owner bootstrap",
-            "note": "First verifier = human (SSE/Robyn); fail-closed until endorsements exist.",
+            "note": "First verifier label = human; independence remains PENDING architecture.",
         }
-        # Sign a stable payload for receipts-first discipline.
         signed = dict(payload)
         signed["signature"] = sign_record(signed)
         event = LedgerEvent.create(

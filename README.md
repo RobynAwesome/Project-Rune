@@ -64,6 +64,11 @@ project-rune/
 
 ```bash
 python -m pip install -e ".[dev]"
+
+# TEST-ONLY keys for local experiments — generate your own; never commit private keys
+# export RUNE_ED25519_PRIVATE_KEY=<64-hex>
+# export RUNE_VERIFIER_PUBLIC_KEYS='{"sse-robyn":"<64-hex-public>"}'
+
 python -m rune bootstrap --verifier-id sse-robyn
 python -m rune check --subject-type agent_coordination_event --reference shared-channel-1
 # BLOCKED (fail closed) — no endorsement yet
@@ -75,14 +80,19 @@ python -m rune endorse \
   --confirm
 
 python -m rune check --subject-type agent_coordination_event --reference shared-channel-1
-# ALLOWED with ledger receipt
+# ALLOWED with ledger receipt (when Ed25519 keys configured)
 ```
 
 Environment:
 
 - `RUNE_LEDGER_PATH` — JSONL ledger path (default: `./data/endorsement_ledger.jsonl`)
-- `RUNE_HMAC_SECRET` — HMAC secret for signatures (required for endorse/verify in production use)
-- `RUNE_FAIL_MODE` — `closed` (default) or `open` (not recommended)
+- `RUNE_ED25519_PRIVATE_KEY` — Ed25519 private key (hex or PEM) for signing (**`PENDING-001` implemented, not owner-endorsed**)
+- `RUNE_VERIFIER_PUBLIC_KEYS` — JSON `{"verifier_id":"<public-hex>",...}` for verification
+- `RUNE_FAIL_MODE` — `closed` (default) or `open` (only with `RUNE_DEV_ESCAPE=1` and non-production; high-risk never bypasses) — **`PENDING-003`**
+- `RUNE_DEV_ESCAPE` — must be `1` for low-risk fail-open bypass
+- `RUNE_ENV` — if `production`, fail-open is refused even when mode=open
+
+Open decisions: [`decisions/README.md`](decisions/README.md). HMAC is **not** used for endorsement identity.
 
 ## Status discipline
 
