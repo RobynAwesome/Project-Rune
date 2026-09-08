@@ -108,18 +108,24 @@ def test_poc_human_endorsed_single_agent_tool_call(gate: Gate) -> None:
     assert decision.ledger_event_id
 
 
-def test_poc_stretch_independent_verifier_type_recorded(gate: Gate) -> None:
-    """Stretch PoC path: record may declare independent_system (human MVP still signs)."""
-    # MVP still uses human signer; independence flag documents intent for post-MVP.
+def test_poc_stretch_independent_system_is_claim_not_proof(gate: Gate) -> None:
+    """independent_system enum may be recorded; it is NOT proven independence."""
     record = gate.request_endorsement(
         "other",
         "cross-arch-check-1",
         method="placeholder independent verifier path",
         actor="sse-robyn",
         confirm=True,
+        verifier_type="independent_system",
+        independence_claimed=True,
     )
-    assert record.verifier.verifier_type == "human"
-    assert record.verifier.independent_of_subject is True
+    assert record.verifier.verifier_type == "independent_system"
+    assert record.verifier.independence_claimed is True
+    assert record.verifier.independence_basis is not None
+    # Allow is from Ed25519 receipt, not from independence_claimed.
+    decision = gate.check("other", "cross-arch-check-1")
+    assert decision.allowed is True
+    assert decision.reason == "endorsed with valid receipt"
 
 
 def test_mcp_tool_surface(gate: Gate, tmp_path) -> None:

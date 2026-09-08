@@ -15,6 +15,8 @@ BOOTSTRAP_VERIFIER_EVENT = "bootstrap_verifier"
 ENDORSEMENT_EVENT = "endorsement"
 GATE_ALLOW_EVENT = "gate_allow"
 GATE_BLOCK_EVENT = "gate_block"
+GATE_BYPASS_EVENT = "gate_bypass"
+FAIL_OPEN_ACTIVE_EVENT = "fail_open_active"
 REVOKE_EVENT = "revoke"
 
 

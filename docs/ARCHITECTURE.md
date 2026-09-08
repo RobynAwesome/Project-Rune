@@ -1,77 +1,90 @@
 # Architecture — Project Rune
 
-Status: architecture with **MVP defaults decided**. Reference implementation lives under `src/rune/`. This is not a claim of production completeness.
+Status: architecture with a **reference MVP under `src/rune/`**. Owner decisions PENDING-001/002/003 have **proposed implementations** with tests — still **`PENDING` / not owner-endorsed**. Implementation ≠ endorsement.
+
+| Layer | Meaning |
+|---|---|
+| Implemented | Code path exists in this checkout |
+| Tested | Covered by pytest in this checkout |
+| Owner-endorsed | Decision record status `ENDORSED` + owner receipt — **none yet** |
+| Unresolved | Explicitly open architecture |
 
 ## Components
 
 ### 1. Endorsement Record
 
-The core artifact. A structured, signed claim that a specific action, coordination event, or identity assertion was independently checked.
-
-Minimum required fields (see `schemas/endorsement.schema.json`):
-
-- what is being endorsed (the subject)
-- who issued the endorsement (the verifier)
-- whether the verifier is architecturally independent of the subject
-- what method was used to check
-- when it was issued
-- a signature binding the record to the verifier
+Structured claim that a subject was checked. Fields: subject, verifier, method, issued_at, status, evidence_refs, optional expires_at, **Ed25519 structured signature**.
 
 ### 2. Verifier
 
-An entity — human, or a system with a genuinely different architecture, training lineage, or failure surface than the agent being checked — that issues endorsements.
+**Implemented:** human bootstrap label via `rune bootstrap`; Ed25519 key material via env.
 
-**MVP default:** first verifier is **human (SSE / Robyn)** with `verifier_type: human` and `independent_of_subject: true`. Bootstrap via `rune bootstrap`. Cross-architecture independent system verifiers remain a stretch goal after MVP.
+**Field:** `independence_claimed` (replaces misleading `independent_of_subject`; legacy alias still readable). Optional `independence_basis` is claim/evidence text only.
 
-**Still open (post-MVP):** how verifier independence is re-checked over time rather than asserted once.
+**`independent_system` enum:** schema-compatible; **not** treated as proof of independence by the gate.
+
+**Unresolved (`PENDING-002`):** how architectural independence is established and re-checked over time. Do not invent model-lineage or org independence.
 
 ### 3. Gate
 
-The enforcement point. High-risk actions must have a valid, unexpired Endorsement Record with status `ENDORSED` before execution is permitted.
+Fail-closed by default. High-risk subjects (`agent_coordination_event`, `identity_file_change`, `completion_claim`) **never** use fail-open.
 
-The gate sits outside the agent's own reasoning. An agent cannot satisfy its own gate by arguing that an action is safe — the gate checks for a valid signed record.
+Low-risk (`other`) bypass only when **all** of:
 
-**MVP default:** **fail closed** when no verifier / no valid endorsement is available (`RUNE_FAIL_MODE=closed`).
+1. `RUNE_FAIL_MODE=open` (strip/lower; unknown → closed)
+2. `RUNE_DEV_ESCAPE=1`
+3. `RUNE_ENV` is not `production`
+
+Every such bypass appends `gate_bypass` (and once per process `fail_open_active`) to the ledger. Facts recorded: fail_mode, subject, reason, session/run id — **not** “enabled by &lt;person&gt;” unless an authenticated control path exists (it does not).
 
 ### 4. Ledger
 
-Append-only JSONL record of endorsements issued, actions gated, and actions blocked. Field patterns mirror the Token Incident Ledger: date, actor, type, evidence refs, follow-up — receipts first, not after-the-fact summaries.
+Append-only JSONL. Event types include: `bootstrap_verifier`, `endorsement`, `gate_allow`, `gate_block`, `gate_bypass`, `fail_open_active`, `revoke`. Historical lines are not rewritten.
 
-Default path: `./data/endorsement_ledger.jsonl` (override with `RUNE_LEDGER_PATH`).
+## Signature scheme (`PENDING-001` — implemented Ed25519, not owner-endorsed)
 
-## High-risk classes (MVP allowlist)
+**Signed bytes (explicit):**
 
-These subject types **always** require endorsement:
+1. Construct endorsement object  
+2. **Exclude** `signature` entirely  
+3. Canonicalize with RFC 8785-style JCS (`canonical_jcs` / `signed_bytes` in `src/rune/signatures.py`)  
+4. UTF-8 encode  
+5. Sign with verifier Ed25519 private key (RFC 8032 / FIPS 186-5 EdDSA)  
+6. Store structured signature:
+
+```json
+{"algorithm": "Ed25519", "key_id": "ed25519:<sha256-prefix>", "value": "<base64>"}
+```
+
+7. Gate resolves verifier public key (`RUNE_VERIFIER_PUBLIC_KEYS` / fallbacks)  
+8. Reconstruct identical canonical bytes  
+9. Verify; failure → endorsement invalid → deny when required  
+
+**HMAC is not a Rune endorsement identity mechanism.** Legacy `hmac:` / string signatures verify as false.
+
+Keys: `RUNE_ED25519_PRIVATE_KEY` (sign), `RUNE_VERIFIER_PUBLIC_KEYS` JSON map verifier_id→public hex (verify). Private keys must not appear in ledger payloads as signing material beyond what the process needs at runtime.
+
+## High-risk classes
+
+Always require valid `ENDORSED` + verifying signature:
 
 | Subject type | Examples |
 |---|---|
-| `agent_coordination_event` | Shared writable channels, multi-agent planning, trust bridges |
+| `agent_coordination_event` | Shared channels, multi-agent planning |
 | `identity_file_change` | SOUL.md / identity-config mutation |
-| `completion_claim` | Writing COMPLETE / PROVEN / DEMO READY / DONE |
-
-Optional / irreversible classes (`other`) may be classified by policy; MVP gate focuses on the three above.
-
-## Signature scheme (MVP)
-
-- **Primary:** HMAC-SHA256 over canonical JSON (keys sorted, no signature field in payload) using `RUNE_HMAC_SECRET`.
-- **Optional:** Ed25519 when `RUNE_ED25519_PRIVATE_KEY` / `RUNE_ED25519_PUBLIC_KEY` are set (PEM or raw hex).
-- Schema `signature` field stores `hmac:<hex>` or `ed25519:<hex>`.
-
-Full PKI / multi-vendor verifier marketplace is an explicit non-goal for this pass.
+| `completion_claim` | COMPLETE / PROVEN / DEMO READY / DONE |
 
 ## Jethro integration (named hook)
 
-| Color | Meaning | Gate behavior |
-|---|---|---|
-| Green | Routine endorse path | Human verifier may endorse after lightweight check |
-| Yellow | Human review required | Hold as `PENDING` until owner confirmation |
-| Red | Block + FoC | Reject / revoke; open FoC-style incident entry |
+| Color | Meaning |
+|---|---|
+| Green | Routine endorse path |
+| Yellow | Human review / PENDING |
+| Red | Block + FoC |
 
-See [WORKFLOWS.md](WORKFLOWS.md).
+## Explicit non-goals
 
-## Explicit non-goals (this pass)
-
-- Full cryptographic PKI / multi-vendor verifier marketplace
-- Rewriting Introduction-to-MCP `poc_foc_enforcer.py`
-- Claiming MHS partnership
-- Marking RUNE COMPLETE / DEMO READY without live gate + ledger receipts
+- Full PKI / multi-vendor verifier marketplace  
+- Proving architectural independence  
+- Claiming MHS partnership  
+- Marking RUNE COMPLETE / PROVEN / DEMO READY without owner receipts  
