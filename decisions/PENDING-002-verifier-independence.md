@@ -32,3 +32,12 @@ Rune cannot prove architectural verifier independence. Replace misleading `indep
 ## Must not claim until `ENDORSED`
 
 - That independence is solved or that `independence_claimed=true` is proof
+
+## External design references (non-dependencies)
+
+These are **not** RUNE runtime dependencies and do not prove verifier independence. They are examples of claim-attribution discipline worth studying when PENDING-002 eventually needs an enforceable independence *basis*:
+
+- **Market/data platforms with source+timestamp+URL attribution on claims** (e.g. Bigdata.com / RavenPack-style entity IDs and `include_source_attribution` audit linking) — every claim bound to a traceable, non-self-asserted source. Useful as a *pattern reference* for how `independence_basis` / `evidence_refs` might one day point at something outside the endorsing process.
+- Do **not** wire financial market feeds into the endorsement gate unless KPGS explicitly needs USD/ZAR (or similar) for token-cost reviews — that is a Cost Profiles concern, not coordination verification.
+
+Bigdata MCP may be used in other Claude/Cursor sessions for markets or spend context; that usage is separate from RUNE’s cryptographic gate.
